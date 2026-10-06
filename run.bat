@@ -1,16 +1,19 @@
 @echo off
-chcp 65001 > nul
 cd /d "%~dp0"
 
 set HAZ_JAVA=java
 if exist "runtime\bin\java.exe" set HAZ_JAVA="runtime\bin\java.exe"
 
-echo 컴파일 중...
+echo Compiling...
+if exist bin rmdir /s /q bin
 javac -encoding UTF-8 -d bin *.java
 if errorlevel 1 (
-    echo 컴파일 실패! JDK가 설치되어 있는지 확인하세요.
+    echo.
+    echo [ERROR] Compile failed. Check that JDK 17+ is installed.
     pause
     exit /b 1
 )
 
-%HAZ_JAVA% -cp bin Main
+echo Starting...
+%HAZ_JAVA% -Dfile.encoding=UTF-8 -cp bin Main
+if errorlevel 1 pause

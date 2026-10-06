@@ -1,56 +1,50 @@
-
-import javax.swing.JOptionPane;
 import javax.swing.Timer;
+import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
+import java.time.LocalTime;
+import java.util.HashSet;
+import java.util.Set;
 
-// 일정 알람 (시나리오 2)
+// 일정마다 설정된 "N분 전" 알람을 감시해서 팝업을 띄움
 public class AlarmManager {
-    public static class HAZAlarm {
-        Schedule schedule;
-        int minutesBefore;   // N분 전 (0이면 정시)
-        boolean fired = false;
-        HAZAlarm(Schedule schedule, int minutesBefore) {
-            this.schedule = schedule;
-            this.minutesBefore = minutesBefore;
-        }
-    }
-
     private final ScheduleManager HAZscheduleManager;
-    private final List<HAZAlarm> HAZalarmList = new ArrayList<>();
+    private final AppSettings settings;
+    private final Set<String> firedKeys = new HashSet<>();
     private Timer timer;
-    private String HAZmessageFormat = "앞으로 %d분 남았어요! - %s"; // 캐릭터 대사로 변경 가능
 
-    public AlarmManager(ScheduleManager HAZscheduleManager) {
-        this.HAZscheduleManager = HAZscheduleManager;
+    public AlarmManager(ScheduleManager sm, AppSettings settings) {
+        this.HAZscheduleManager = sm;
+        this.settings = settings;
     }
-
-    public void addAlarm(Schedule schedule, int minutesBefore) {
-        if (schedule == null || schedule.getStart() == null) {
-            JOptionPane.showMessageDialog(null, "시간이 지정되지 않은 일정입니다.", "경고", JOptionPane.WARNING_MESSAGE);
-            return;
-        }
-        HAZalarmList.add(new HAZAlarm(schedule, minutesBefore));
-    }
-
-    public void setMessageFormat(String format) { this.HAZmessageFormat = format; }
 
     public void start() {
-        timer = new Timer(30_000, e -> check()); // 30초마다 확인
+        timer = new Timer(15_000, e -> check());
+        timer.setInitialDelay(2_000);
         timer.start();
     }
 
     private void check() {
         LocalDateTime now = LocalDateTime.now();
-        for (HAZAlarm a : HAZalarmList) {
-            LocalDateTime fireTime = a.schedule.getStart().minusMinutes(a.minutesBefore);
-            if (!a.fired && !now.isBefore(fireTime)) {
-                a.fired = true;
-                String msg = String.format(HAZmessageFormat, a.minutesBefore, a.schedule.getTitle());
-                if (a.schedule.getLink() != null) msg += "\n링크: " + a.schedule.getLink();
-                JOptionPane.showMessageDialog(null, msg, "알람", JOptionPane.INFORMATION_MESSAGE);
+        for (int i = 0; i <= 1; i++) {   // 자정 넘어가는 알람 때문에 내일 것도 확인
+            LocalDate day = now.toLocalDate().plusDays(i);
+            for (ScheduleManager.Occurrence o : HAZscheduleManager.startsOn(day, true)) {
+                Schedule s = o.schedule;
+                if (!s.hasAlarm()) continue;
+                LocalDateTime fireAt = o.start.minusMinutes(s.getAlarmMinutes());
+                boolean inWindow = !now.isBefore(fireAt) && now.isBefore(o.start.plusMinutes(1));
+                String key = System.identityHashCode(s) + "@" + o.start;
+                if (inWindow && firedKeys.add(key)) {
+                    long left = Math.max(0, Duration.between(now, o.start).toMinutes() + 1);
+                    new AlarmPopup(settings, s, (int) Math.min(left, s.getAlarmMinutes())).showPopup();
+                }
             }
         }
+    }
+
+    public void showTest() {
+        Schedule sample = new Schedule("테스트 일정", LocalDate.now(), LocalTime.of(18, 0), LocalTime.of(19, 0), "개인");
+        sample.setMemo("알람은 이렇게 떠요!");
+        new AlarmPopup(settings, sample, 10).showPopup();
     }
 }
