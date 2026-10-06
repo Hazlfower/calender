@@ -19,8 +19,12 @@ public class Schedule {
         this.end = end;
         this.type = type;
     }
-
+    
     public String getTitle() { return title; }
+    public void setTitle(String title) { this.title = title; }
+    public void setStart(LocalDateTime start) { this.start = start; }
+    public void setEnd(LocalDateTime end) { this.end = end; }
+    public void setType(String type) { this.type = type; }
     public LocalDateTime getStart() { return start; }
     public LocalDateTime getEnd() { return end; }
     public String getType() { return type; }

@@ -28,6 +28,7 @@ public class ScheduleManager {
 
     public void add(Schedule schedule) { HAZscheduleList.add(schedule); save(); }
     public void remove(Schedule schedule) { HAZscheduleList.remove(schedule); save(); }
+    public void update() { save(); } // 수정 후 저장
     public List<Schedule> getAll() { return HAZscheduleList; }
     public List<String> getTypes() { return typeList; }
     public void addType(String type) { typeList.add(type); }
