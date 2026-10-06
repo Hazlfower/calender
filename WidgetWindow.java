@@ -1,4 +1,3 @@
-package haz;
 
 import javax.swing.*;
 import java.awt.*;

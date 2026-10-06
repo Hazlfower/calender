@@ -1,4 +1,3 @@
-package haz;
 
 import javax.swing.JOptionPane;
 import javax.swing.Timer;
