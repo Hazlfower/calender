@@ -1,7 +1,9 @@
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
-// 할 일 목록 (haz_todos.dat)
+// 할 일 목록 (haz_data.json 안에 저장)
 public class Todos {
     public static class Item {
         public String text;
@@ -10,24 +12,56 @@ public class Todos {
         @Override public String toString() { return text; }
     }
 
-    private static final String HAZ_TODO_FILE = "haz_todos.dat";
     private final List<Item> items = new ArrayList<>();
+    private Runnable saver = () -> { };
 
+    public void setSaver(Runnable saver) { this.saver = saver; }
     public List<Item> all() { return items; }
-    public void add(String text) { if (text != null && !text.isBlank()) { items.add(new Item(text.trim(), false)); save(); } }
-    public void remove(Item item) { items.remove(item); save(); }
-    public void toggle(Item item) { item.done = !item.done; save(); }
 
-    public void save() {
-        List<String> lines = new ArrayList<>();
-        for (Item i : items) lines.add(Store.join(i.done ? "1" : "0", Store.escape(i.text)));
-        Store.writeLines(HAZ_TODO_FILE, lines);
+    public void add(String text) {
+        if (text == null || text.isBlank()) return;
+        items.add(new Item(text.trim(), false));
+        saver.run();
     }
 
-    public void load() {
-        items.clear();
-        for (String[] p : Store.readLines(HAZ_TODO_FILE)) {
-            if (p.length >= 2) items.add(new Item(Store.unescape(p[1]), p[0].equals("1")));
+    public void remove(Item item) { items.remove(item); saver.run(); }
+    public void toggle(Item item) { item.done = !item.done; saver.run(); }
+
+    public void edit(Item item, String text) {
+        if (text == null || text.isBlank()) return;
+        item.text = text.trim();
+        saver.run();
+    }
+
+    // 다 한 일 지우기
+    public int clearDone() {
+        int before = items.size();
+        items.removeIf(i -> i.done);
+        saver.run();
+        return before - items.size();
+    }
+
+    public void writeTo(Map<String, Object> root) {
+        List<Object> list = new ArrayList<>();
+        for (Item i : items) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("text", i.text);
+            m.put("done", i.done);
+            list.add(m);
         }
+        root.put("todos", list);
+    }
+
+    public void readFrom(Map<String, Object> root) {
+        items.clear();
+        for (Map<String, Object> m : Json.maps(root, "todos")) {
+            String t = Json.str(m, "text", "");
+            if (!t.isBlank()) items.add(new Item(t, Json.bool(m, "done", false)));
+        }
+    }
+
+    // 예전 haz_todos.dat 한 줄 (완료|글)
+    public void addLegacy(String text, boolean done) {
+        if (text != null && !text.isBlank()) items.add(new Item(text, done));
     }
 }

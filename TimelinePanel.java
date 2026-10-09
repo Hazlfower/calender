@@ -2,159 +2,197 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.geom.RoundRectangle2D;
 import java.time.LocalDate;
-import java.time.LocalTime;
 import java.util.Arrays;
+import java.util.List;
 import java.util.function.BiConsumer;
 
 // "시간 테트리스": 세로 = 시(0~23), 가로 = 분(0,10,20...50)
-// 이미 일정이 있는 칸에는 걸치게 선택할 수 없음
-public class TimelinePanel extends JPanel {
-    private static final int SLOTS = 24 * 6;
-    private static final int LABEL_W = 34, HEAD_H = 22, CELL_W = 42, CELL_H = 24;
+// 이미 있는 일정(과 앞뒤 여유 시간) 칸은 피해서, 빈 칸만 드래그로 고를 수 있음
+public class TimelinePanel extends JComponent {
+    static final int SLOTS = 144, COLS = 6, LABEL_W = 36, CELL_W = 42, CELL_H = 25, HEAD = 22;
 
-    private final ScheduleManager HAZscheduleManager;
-    private final Schedule except;
-    private final boolean[] occupied = new boolean[SLOTS];
-    private final String[] occupiedTitle = new String[SLOTS];
-    private final Color[] occupiedColor = new Color[SLOTS];
-    private final BiConsumer<LocalTime, LocalTime> onSelect;
+    private final boolean[] busy = new boolean[SLOTS], pad = new boolean[SLOTS];
+    private final String[] busyTitle = new String[SLOTS];
+    private final Color[] busyColor = new Color[SLOTS];
+    private int selA = -1, selB = -1, anchor = -1;
+    private boolean typedOverlap;
+    private String disabledText;
+    private final BiConsumer<Integer, Integer> onSelect;
 
-    private int selFrom = -1, selTo = -1, dragStart = -1;
-    private boolean invalid = false;
-
-    public TimelinePanel(ScheduleManager sm, Schedule except, BiConsumer<LocalTime, LocalTime> onSelect) {
-        this.HAZscheduleManager = sm;
-        this.except = except;
+    public TimelinePanel(BiConsumer<Integer, Integer> onSelect) {
         this.onSelect = onSelect;
         setOpaque(false);
-        setPreferredSize(new Dimension(LABEL_W + CELL_W * 6 + 4, HEAD_H + CELL_H * 24 + 4));
-
-        MouseAdapter mouse = new MouseAdapter() {
+        setPreferredSize(new Dimension(LABEL_W + COLS * CELL_W + 8, HEAD + 24 * CELL_H + 6));
+        setToolTipText("");
+        setAutoscrolls(true);
+        setCursor(Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR));
+        MouseAdapter ma = new MouseAdapter() {
             @Override public void mousePressed(MouseEvent e) {
-                int s = slotAt(e.getPoint());
-                if (s < 0) return;
-                dragStart = s;
-                updateDrag(s);
-            }
-            @Override public void mouseDragged(MouseEvent e) {
-                int s = slotAt(e.getPoint());
-                if (dragStart >= 0 && s >= 0) updateDrag(s);
-            }
-            @Override public void mouseReleased(MouseEvent e) {
-                if (dragStart < 0) return;
-                dragStart = -1;
-                if (invalid) {
-                    Toolkit.getDefaultToolkit().beep();
-                    selFrom = selTo = -1;
-                    invalid = false;
-                } else if (selFrom >= 0) {
-                    onSelect.accept(slotToTime(selFrom), slotToTime(selTo + 1));
-                }
+                if (disabledText != null || !SwingUtilities.isLeftMouseButton(e)) return;
+                int i = slotAt(e.getPoint(), false);
+                if (i < 0) return;
+                if (blocked(i)) { Toolkit.getDefaultToolkit().beep(); return; }
+                anchor = i;
+                selA = selB = i;
+                typedOverlap = false;
+                fire();
                 repaint();
             }
+
+            @Override public void mouseDragged(MouseEvent e) {
+                if (anchor < 0) return;
+                int j = slotAt(e.getPoint(), true);
+                // 막힌 칸을 만나면 거기서 멈춤 (테트리스처럼 빈 곳에만 끼워 넣기)
+                if (j >= anchor) {
+                    int b = anchor;
+                    while (b + 1 <= j && !blocked(b + 1)) b++;
+                    selA = anchor;
+                    selB = b;
+                } else {
+                    int a = anchor;
+                    while (a - 1 >= j && !blocked(a - 1)) a--;
+                    selA = a;
+                    selB = anchor;
+                }
+                scrollRectToVisible(new Rectangle(e.getX(), e.getY() - CELL_H, 1, CELL_H * 2));
+                fire();
+                repaint();
+            }
+
+            @Override public void mouseReleased(MouseEvent e) { anchor = -1; }
         };
-        addMouseListener(mouse);
-        addMouseMotionListener(mouse);
-        ToolTipManager.sharedInstance().registerComponent(this);
+        addMouseListener(ma);
+        addMouseMotionListener(ma);
     }
 
-    public void setDate(LocalDate date) {
-        Arrays.fill(occupied, false);
-        Arrays.fill(occupiedTitle, null);
-        if (date != null) {
-            for (Schedule s : HAZscheduleManager.getByDate(date, true)) {
-                if (s == except) continue;
-                for (int i = 0; i < SLOTS; i++) {
-                    if (s.overlaps(date, slotToTime(i), slotToTime(i + 1))) {
-                        occupied[i] = true;
-                        occupiedTitle[i] = s.getTitle();
-                        occupiedColor[i] = HAZscheduleManager.colorOf(s.getCategory());
-                    }
-                }
+    // null 이면 쓸 수 있음, 글이 있으면 그 안내를 띄우고 막음
+    public void setDisabledText(String text) {
+        disabledText = text;
+        setCursor(Cursor.getPredefinedCursor(text == null ? Cursor.CROSSHAIR_CURSOR : Cursor.DEFAULT_CURSOR));
+        repaint();
+    }
+
+    private int slotAt(Point p, boolean clamp) {
+        int c = Math.floorDiv(p.x - LABEL_W, CELL_W), r = Math.floorDiv(p.y - HEAD, CELL_H);
+        if (!clamp && (c < 0 || c >= COLS || r < 0 || r >= 24)) return -1;
+        c = Math.max(0, Math.min(COLS - 1, c));
+        r = Math.max(0, Math.min(23, r));
+        return r * COLS + c;
+    }
+
+    private boolean blocked(int i) { return busy[i] || pad[i]; }
+
+    // 그날 다른 일정들로 막힌 칸 계산. buffer = 앞뒤로 비워 둘 여유(분)
+    public void setBusy(List<Schedule> others, LocalDate day, int buffer, ScheduleManager sm) {
+        Arrays.fill(busy, false);
+        Arrays.fill(pad, false);
+        Arrays.fill(busyTitle, null);
+        for (Schedule s : others) {
+            if (s.allDay()) continue;
+            int[] r = s.rangeOn(day);
+            if (r == null) continue;
+            int a = r[0] / 10, b = Math.min(SLOTS, (r[1] + 9) / 10);
+            for (int i = a; i < b; i++) {
+                busy[i] = true;
+                busyTitle[i] = s.title;
+                busyColor[i] = sm.colorOf(s);
+            }
+            if (buffer > 0) {
+                for (int i = b; i < Math.min(SLOTS, (r[1] + buffer + 9) / 10); i++) pad[i] = true;
+                for (int i = Math.max(0, (r[0] - buffer) / 10); i < a; i++) pad[i] = true;
             }
         }
+        for (int i = 0; i < SLOTS; i++) if (busy[i]) pad[i] = false;
+        checkTypedOverlap();
         repaint();
     }
 
-    public void setSelection(LocalTime start, LocalTime end) {
-        if (start == null || end == null || !end.isAfter(start)) selFrom = selTo = -1;
+    // 입력칸에 쓴 시간을 그림에 반영 (onSelect 는 부르지 않음)
+    public void showSelection(int start, int end) {
+        if (start < 0 || end <= start || start >= 1440) selA = selB = -1;
         else {
-            selFrom = minutes(start) / 10;
-            selTo = Math.max(selFrom, (int) Math.ceil(minutes(end) / 10.0) - 1);
+            selA = start / 10;
+            selB = Math.min(SLOTS, (end + 9) / 10) - 1;
         }
-        invalid = false;   // 직접 입력한 시간이 다른 일정과 겹치면 빨갛게
-        if (selFrom >= 0) for (int i = selFrom; i <= selTo; i++) if (occupied[i]) invalid = true;
+        checkTypedOverlap();
         repaint();
     }
 
-    public int selectionY() { return HEAD_H + (selFrom < 0 ? 8 : selFrom / 6) * CELL_H; }
-
-    private void updateDrag(int current) {
-        selFrom = Math.min(dragStart, current);
-        selTo = Math.max(dragStart, current);
-        invalid = false;
-        for (int i = selFrom; i <= selTo; i++) if (occupied[i]) invalid = true;
-        repaint();
+    private void checkTypedOverlap() {
+        typedOverlap = false;
+        if (selA < 0) return;
+        for (int i = selA; i <= selB; i++) if (busy[i]) typedOverlap = true;
     }
 
-    private int slotAt(Point p) {
-        if (p.x < LABEL_W || p.y < HEAD_H) return -1;
-        int col = (p.x - LABEL_W) / CELL_W, row = (p.y - HEAD_H) / CELL_H;
-        if (col > 5 || row > 23) return -1;
-        return row * 6 + col;
-    }
+    public boolean overlapsBusy() { return typedOverlap; }
 
-    private static int minutes(LocalTime t) { return t.getHour() * 60 + t.getMinute(); }
-    private static LocalTime slotToTime(int slot) {
-        int m = slot * 10;
-        return m >= 24 * 60 ? LocalTime.of(23, 59) : LocalTime.of(m / 60, m % 60);
+    public int focusY() { return HEAD + ((selA < 0 ? 8 * COLS : selA) / COLS) * CELL_H; }
+
+    private void fire() {
+        if (onSelect != null) onSelect.accept(selA < 0 ? -1 : selA * 10, selA < 0 ? -1 : (selB + 1) * 10);
     }
 
     @Override public String getToolTipText(MouseEvent e) {
-        int s = slotAt(e.getPoint());
-        if (s < 0) return null;
-        return occupied[s] ? slotToTime(s) + " · " + occupiedTitle[s] + " (이미 있는 일정)" : slotToTime(s).toString();
+        int i = slotAt(e.getPoint(), false);
+        if (i < 0 || disabledText != null) return null;
+        String time = TimeText.fmt(i * 10);
+        if (busy[i]) return time + "  「" + busyTitle[i] + "」";
+        if (pad[i]) return time + "  일정 사이 여유 시간";
+        return time + "  (드래그해서 고르기)";
+    }
+
+    // 이미 있는 일정 칸: 그 일정 색을 진하게
+    private Color busyFill(int i) {
+        Color c = busyColor[i] == null ? Theme.sub() : busyColor[i];
+        return Theme.isNight() ? Ui.blend(c, Theme.surface(), 0.7) : Ui.blend(c, Theme.text(), 0.82);
     }
 
     @Override protected void paintComponent(Graphics g) {
-        Ui.smooth(g);
-        Graphics2D g2 = (Graphics2D) g;
-        g2.setFont(Ui.font(11, false));
+        Graphics2D g2 = Ui.aa(g);
+        Color free = Theme.isNight() ? Ui.blend(Color.WHITE, Theme.surface(), 0.06) : Ui.blend(Theme.bg(), Theme.surface(), 0.55);
+        boolean off = disabledText != null;
+        int arc = Theme.style() == Theme.Style.SF ? 2 : 7;
+
+        g2.setFont(Ui.font(10.5f, false));
         g2.setColor(Theme.sub());
-        for (int c = 0; c < 6; c++) g2.drawString(String.valueOf(c * 10), LABEL_W + c * CELL_W + 4, 15);
-        for (int h = 0; h < 24; h++) {
-            String t = String.valueOf(h);
-            g2.drawString(t, LABEL_W - 8 - g2.getFontMetrics().stringWidth(t), HEAD_H + h * CELL_H + 16);
-        }
+        for (int c = 0; c < COLS; c++) Ui.centerText(g2, c * 10 + "", LABEL_W + c * CELL_W + CELL_W / 2.0, HEAD - 7);
 
-        // 빈 칸 격자
-        g2.setColor(Theme.border());
-        for (int h = 0; h <= 24; h++) g2.drawLine(LABEL_W, HEAD_H + h * CELL_H, LABEL_W + 6 * CELL_W, HEAD_H + h * CELL_H);
-        for (int c = 0; c <= 6; c++) g2.drawLine(LABEL_W + c * CELL_W, HEAD_H, LABEL_W + c * CELL_W, HEAD_H + 24 * CELL_H);
-
-        // 이미 있는 일정 / 선택 영역을 줄 단위 둥근 블록으로
-        int r = Math.min(Theme.radius(), 12);
-        for (int row = 0; row < 24; row++) {
-            int c = 0;
-            while (c < 6) {
-                int i = row * 6 + c;
-                boolean sel = selFrom >= 0 && i >= selFrom && i <= selTo;
-                if (!occupied[i] && !sel) { c++; continue; }
-                int startC = c;
-                while (c < 6 && occupied[row * 6 + c] == occupied[i]
-                        && (selFrom >= 0 && row * 6 + c >= selFrom && row * 6 + c <= selTo) == sel) c++;
-                Color fill = sel ? (invalid ? Theme.danger() : Theme.accent()) : Ui.blend(occupiedColor[i], Theme.surface(), 0.55);
-                g2.setColor(sel ? Ui.alpha(fill, 200) : fill);
-                g2.fillRoundRect(LABEL_W + startC * CELL_W + 2, HEAD_H + row * CELL_H + 3, (c - startC) * CELL_W - 4, CELL_H - 6, r, r);
-                if (!sel) {
-                    g2.setColor(Theme.text());
-                    Shape old = g2.getClip();
-                    g2.clipRect(LABEL_W + startC * CELL_W + 2, HEAD_H + row * CELL_H, (c - startC) * CELL_W - 6, CELL_H);
-                    g2.drawString(occupiedTitle[i], LABEL_W + startC * CELL_W + 7, HEAD_H + row * CELL_H + 16);
-                    g2.setClip(old);
-                }
+        for (int r = 0; r < 24; r++) {
+            int y = HEAD + r * CELL_H;
+            g2.setFont(Ui.font(11f, true));
+            g2.setColor(Theme.sub());
+            String h = String.valueOf(r);
+            g2.drawString(h, LABEL_W - 10 - g2.getFontMetrics().stringWidth(h), y + 17);
+            for (int c = 0; c < COLS; c++) {
+                int i = r * COLS + c, x = LABEL_W + c * CELL_W;
+                RoundRectangle2D cell = new RoundRectangle2D.Float(x + 2, y + 2, CELL_W - 4, CELL_H - 4, arc, arc);
+                boolean sel = !off && selA >= 0 && i >= selA && i <= selB;
+                if (sel) g2.setColor(busy[i] ? Theme.danger() : Theme.highlight());
+                else if (busy[i]) g2.setColor(Ui.alpha(busyFill(i), off ? 90 : 255));
+                else if (pad[i]) g2.setColor(Ui.alpha(Theme.danger(), off ? 30 : 55));
+                else g2.setColor(free);
+                g2.fill(cell);
+            }
+            g2.setFont(Ui.font(10.5f, true));
+            for (int c = 0; c < COLS; c++) {
+                int i = r * COLS + c;
+                if (!busy[i] || (c > 0 && busy[i - 1] && busyTitle[i].equals(busyTitle[i - 1]))) continue;
+                int run = 1;
+                while (c + run < COLS && busy[i + run] && busyTitle[i + run].equals(busyTitle[i])) run++;
+                g2.setColor(Theme.onColor(busyFill(i)));
+                g2.drawString(Ui.ellipsize(busyTitle[i], g2.getFontMetrics(), run * CELL_W - 12), LABEL_W + c * CELL_W + 7, y + 17);
             }
         }
+        if (off) {
+            Rectangle vis = getVisibleRect();
+            g2.setColor(Ui.alpha(Theme.surface(), 205));
+            g2.fill(vis);
+            g2.setFont(Ui.semi(13.5f));
+            g2.setColor(Theme.sub());
+            Ui.centerText(g2, disabledText, vis.getCenterX(), vis.getCenterY());
+        }
+        g2.dispose();
     }
 }
